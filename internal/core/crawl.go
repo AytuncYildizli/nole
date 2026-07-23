@@ -2,10 +2,13 @@ package core
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -15,6 +18,54 @@ import (
 	"github.com/dorukardahan/nole/internal/nolelog"
 	"github.com/dorukardahan/nole/internal/safenet"
 )
+
+// CrawlCache provides a local disk cache for crawl results.
+// Each domain gets its own cache file at CrawlCacheDir/domain.json.
+type CrawlCache struct {
+	Dir string
+}
+
+// NewCrawlCache creates a crawl cache directory if it doesn't exist.
+func NewCrawlCache(dir string) *CrawlCache {
+	if dir == "" {
+		dir = "/tmp/nole-crawl-cache"
+	}
+	os.MkdirAll(dir, 0755)
+	return &CrawlCache{Dir: dir}
+}
+
+func (cc *CrawlCache) cachePath(domain string) string {
+	return filepath.Join(cc.Dir, strings.ReplaceAll(domain, "/", "_")+".json")
+}
+
+// Get returns cached crawl response for a domain, nil if not cached or expired.
+func (cc *CrawlCache) Get(domain string) *CrawlResponse {
+	cp := cc.cachePath(domain)
+	data, err := os.ReadFile(cp)
+	if err != nil {
+		return nil
+	}
+	var resp CrawlResponse
+	if err := json.Unmarshal(data, &resp); err != nil {
+		return nil
+	}
+	// 24-hour expiry
+	if time.Since(resp.CrawledAt) > 24*time.Hour {
+		return nil
+	}
+	return &resp
+}
+
+// Set stores crawl response for a domain.
+func (cc *CrawlCache) Set(domain string, resp *CrawlResponse) {
+	if resp == nil {
+		return
+	}
+	cp := cc.cachePath(domain)
+	resp.CrawledAt = time.Now()
+	data, _ := json.Marshal(resp)
+	os.WriteFile(cp, data, 0644)
+}
 
 // CrawlRequest describes a recursive crawl starting from a seed URL.
 // Depth 1 fetches the seed + extracts links (no recursion), depth 2 fetches
@@ -39,11 +90,12 @@ type CrawlResult struct {
 
 // CrawlResponse holds all pages discovered and extracted during the crawl.
 type CrawlResponse struct {
-	SeedURL string       `json:"seed_url"`
-	Depth   int          `json:"depth"`
-	Total   int          `json:"total"` // number of successfully extracted pages
-	Pages   []CrawlResult `json:"pages"`
-	Errors  []CrawlResult `json:"errors,omitempty"`
+	SeedURL   string        `json:"seed_url"`
+	Depth     int           `json:"depth"`
+	Total     int           `json:"total"`
+	Pages     []CrawlResult `json:"pages"`
+	Errors    []CrawlResult `json:"errors,omitempty"`
+	CrawledAt time.Time     `json:"crawled_at,omitempty"`
 }
 
 // extractLinks parses an HTML document body and returns all absolute
