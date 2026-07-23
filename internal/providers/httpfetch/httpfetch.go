@@ -199,29 +199,55 @@ func (p Provider) Extract(ctx context.Context, req core.ExtractRequest) (core.Ex
 			return core.ExtractResponse{}, providerhttp.NewHTTPStatusError("httpfetch", "extract", resp.StatusCode, body)
 		}
 
-		ct := mediaType(resp.Header.Get("Content-Type"))
+			ct := mediaType(resp.Header.Get("Content-Type"))
 		if ct != "" && !isTextual(ct) {
 			_ = resp.Body.Close()
 			return core.ExtractResponse{}, fmt.Errorf("httpfetch: unsupported content type %q (only HTML/text is extracted; no JS rendering)", core.TruncateRunes(ct, 100))
 		}
 
-		bodyBytes, err := providerhttp.ReadAllLimited(resp.Body, p.maxBytes)
+				bodyBytes, err := providerhttp.ReadAllLimited(resp.Body, p.maxBytes)
 		_ = resp.Body.Close()
 		if err != nil {
 			return core.ExtractResponse{}, fmt.Errorf("httpfetch: read body: %w", err)
 		}
 
-			// htmlToText converts HTML to plain text (defined in htmltext.go, same package)
-		text, _ := htmlToText([]byte(bodyBytes))
-		content := text
+		// text/plain: return raw body unchanged (htmlToText would mangle angle brackets)
+		// HTML: extract text + title via htmlToText
+		var content string
+		var title string
+		var safety core.ContentSafetyReport
+		if ct == "text/plain" || strings.HasPrefix(ct, "text/plain") {
+			content = string(bodyBytes)
+			safety = core.ContentSafetyReport{Untrusted: false, Risk: core.ContentRiskNoIndicators}
+		} else {
+			text, extractedTitle := htmlToText([]byte(bodyBytes))
+			content = text
+			title = extractedTitle
+			safety = core.ScanRawHTMLContentSafety(bodyBytes)
+		}
+
+		metadata := map[string]string{"mode": "http-fetch"}
+		if title != "" {
+			metadata["title"] = title
+		}
+
+		// For empty/script-only pages return success with empty content + metadata
 		if strings.TrimSpace(content) == "" {
-			return core.ExtractResponse{}, fmt.Errorf("httpfetch: extracted empty content from %s", req.URL)
+			return core.ExtractResponse{
+				URL:           req.URL,
+				Provider:      "httpfetch",
+				Content:       "",
+				Metadata:      metadata,
+				ContentSafety: safety,
+			}, nil
 		}
 
 		return core.ExtractResponse{
-			URL:      req.URL,
-			Provider: "httpfetch",
-			Content:  strings.TrimSpace(content),
+			URL:           req.URL,
+			Provider:      "httpfetch",
+			Content:       strings.TrimSpace(content),
+			Metadata:      metadata,
+			ContentSafety: safety,
 		}, nil
 	}
 }
