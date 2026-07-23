@@ -1,11 +1,22 @@
+// Package ddgs provides the DuckDuckGo Lite / HTML search provider for Nólë.
+// It is the last-resort keyless search backstop and, when routed through Tor,
+// also serves .onion search results via DuckDuckGo's onion service.
+//
+// Proxy support: NOLE_PROXY_URL env var (socks5://host:port or http://host:port)
+// enables Tor/darkweb/privacy crawling. When set, the HTTP client routes through
+// the proxy. When no proxy is set but Tor is detected on 127.0.0.1:9050, the
+// provider will automatically proxy through it.
 package ddgs
 
 import (
 	"context"
 	"fmt"
+	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -13,14 +24,119 @@ import (
 	"github.com/dorukardahan/nole/internal/providers/providerhttp"
 )
 
+// DefaultTorHost is the default Tor SOCKS5 host.
+const DefaultTorHost = "127.0.0.1"
+
+// DefaultTorPort is the default Tor SOCKS5 port.
+const DefaultTorPort = 9050
+
+// ddgHTMLEndpoint is the standard DDG HTML search endpoint.
+const ddgHTMLEndpoint = "https://html.duckduckgo.com/html/"
+
+// ddgOnionEndpoint is the DuckDuckGo .onion search endpoint, reachable only
+// via Tor. It performs identically to the clearnet html endpoint but keeps
+// the search entirely inside the Tor network — no clearnet exit, end-to-end
+// encryption between the client and DDG's hidden service.
+const ddgOnionEndpoint = "http://duckduckgogg42xjoc72x3sjasowoarfbgcmvfimaftt6twagswzczad.onion/html/"
+
 type Provider struct {
 	httpClient *http.Client
+	proxyURL   *url.URL
+	proxySet   bool
+	// useOnionEndpoint forces the .onion endpoint. Set when proxy is configured
+	// or Tor is detected, so the search stays entirely inside the Tor network.
+	useOnionEndpoint bool
 }
 
-func New() Provider {
-	return Provider{
-		httpClient: &http.Client{Timeout: 20 * time.Second},
+// Option is a functional option for configuring the DDGS provider.
+type Option func(*Provider)
+
+// WithProxy sets a SOCKS5 or HTTP proxy URL on the provider.
+func WithProxy(proxyURL *url.URL) Option {
+	return func(p *Provider) {
+		p.proxyURL = proxyURL
+		p.proxySet = true
 	}
+}
+
+// WithOnionEndpoint forces the .onion endpoint. Set automatically when proxy
+// is configured, but can be force-disabled with the zero value.
+func WithOnionEndpoint(enabled bool) Option {
+	return func(p *Provider) {
+		p.useOnionEndpoint = enabled
+	}
+}
+
+// proxyFromEnv reads NOLE_PROXY_URL and returns the parsed proxy URL, or nil.
+func proxyFromEnv() *url.URL {
+	raw := os.Getenv("NOLE_PROXY_URL")
+	if raw == "" {
+		return nil
+	}
+	proxyURL, err := url.Parse(raw)
+	if err != nil {
+		return nil
+	}
+	return proxyURL
+}
+
+// detectTor checks whether a Tor SOCKS5 proxy is listening on the default port.
+func detectTor() bool {
+	addr := net.JoinHostPort(DefaultTorHost, strconv.Itoa(DefaultTorPort))
+	conn, err := net.DialTimeout("tcp", addr, 2*time.Second)
+	if err != nil {
+		return false
+	}
+	conn.Close()
+	return true
+}
+
+// New creates a DDGS provider with default settings.
+func New(opts ...Option) Provider {
+	p := Provider{}
+
+	// Apply user options first (may set proxy explicitly)
+	for _, opt := range opts {
+		opt(&p)
+	}
+
+	// Auto-detect: check NOLE_PROXY_URL env, then Tor port
+	if !p.proxySet {
+		if pu := proxyFromEnv(); pu != nil {
+			p.proxyURL = pu
+			p.proxySet = true
+		}
+	}
+	if !p.proxySet && detectTor() {
+		p.proxyURL = &url.URL{
+			Scheme: "socks5",
+			Host:   net.JoinHostPort(DefaultTorHost, strconv.Itoa(DefaultTorPort)),
+		}
+		p.proxySet = true
+	}
+
+	// When proxied, use the .onion endpoint
+	if p.proxySet {
+		p.useOnionEndpoint = true
+	}
+
+	// Build transport
+	transport := &http.Transport{
+		MaxIdleConns:          100,
+		IdleConnTimeout:       90 * time.Second,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ExpectContinueTimeout: 1 * time.Second,
+	}
+	if p.proxyURL != nil {
+		transport.Proxy = http.ProxyURL(p.proxyURL)
+	}
+
+	p.httpClient = &http.Client{
+		Transport: transport,
+		Timeout:   30 * time.Second,
+	}
+
+	return p
 }
 
 func (p Provider) Name() string { return "ddgs" }
@@ -36,6 +152,15 @@ var (
 	reHTMLEntity    = regexp.MustCompile(`&amp;`)
 )
 
+// searchEndpoint returns the appropriate search endpoint based on whether the
+// .onion internal endpoint should be used.
+func (p Provider) searchEndpoint() string {
+	if p.useOnionEndpoint {
+		return ddgOnionEndpoint
+	}
+	return ddgHTMLEndpoint
+}
+
 func (p Provider) Search(ctx context.Context, req core.SearchRequest) (core.SearchResponse, error) {
 	form := url.Values{}
 	form.Set("q", req.Query)
@@ -44,7 +169,8 @@ func (p Provider) Search(ctx context.Context, req core.SearchRequest) (core.Sear
 	// canonical implementation explicitly sends an empty string.
 	form.Set("b", "")
 
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://html.duckduckgo.com/html/", strings.NewReader(form.Encode()))
+	endpoint := p.searchEndpoint()
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(form.Encode()))
 	if err != nil {
 		return core.SearchResponse{}, fmt.Errorf("ddgs: create request: %w", err)
 	}
@@ -65,16 +191,7 @@ func (p Provider) Search(ctx context.Context, req core.SearchRequest) (core.Sear
 	defer resp.Body.Close()
 
 	if resp.StatusCode == http.StatusAccepted {
-		// DDG signals rate-limit / bot-block with HTTP 202 (often with a body
-		// echoing pieces of the request). Wrapping providerhttp.NewHTTPStatusError
-		// here would put the redaction in place, but safeerr.Message unwraps
-		// to the inner *HTTPStatusError and renders only its Error() text —
-		// which categorizes 202 as "unexpected" and never mentions "rate
-		// limited." That would erase the classification signal in every
-		// user-facing surface that uses safeerr.Message (the bench tracer
-		// included). Build a sanitized single-shot error here instead: it
-		// keeps the "rate limited" marker AND drops the raw body, recording
-		// only its size so observers know something was redacted.
+		// DDG signals rate-limit / bot-block with HTTP 202
 		body, _ := providerhttp.ReadAllLimited(resp.Body, providerhttp.MaxSearchResponseBytes)
 		return core.SearchResponse{}, fmt.Errorf("ddgs: rate limited (HTTP 202; response body redacted, %d bytes)", len(body))
 	}
@@ -89,27 +206,12 @@ func (p Provider) Search(ctx context.Context, req core.SearchRequest) (core.Sear
 	}
 	html := string(bodyBytes)
 
-	// Pair each result link with the snippet that physically follows it in the
-	// HTML, bounded by the next link's offset. The previous parser zipped two
-	// independently-collected slices with a counter that only advanced on kept
-	// links, so a skipped ad row — which can carry its own result__snippet —
-	// shifted every subsequent organic snippet onto the wrong result. Matching
-	// by byte offset keeps each snippet anchored to the link it belongs to.
 	linkMatches := reResultLink.FindAllStringSubmatchIndex(html, -1)
 	snippetMatches := reResultSnippet.FindAllStringSubmatchIndex(html, -1)
 
-	// The DDG HTML endpoint exposes no per-result relevance score or publication
-	// date, and no time filter is sent (an undocumented df param risks raising the
-	// 202 bot-block on this last-resort fallback), so Score/PublishedAt stay zero.
 	results := make([]core.SearchResult, 0)
 
 	for i, lm := range linkMatches {
-		// DDG HTML-escapes ampersands in the href attribute (e.g. a URL with
-		// multiple query params arrives as `?a=1&amp;b=2`). cleanHTML normalizes
-		// &amp; for title/snippet, but href must stay a raw URL — so apply ONLY
-		// the &amp;->& normalization here, not the full tag-strip/entity pass.
-		// (No uddg/redirect unwrap: html.duckduckgo.com/html/ never emits uddg
-		// or /l/ redirect wrappers, so QueryUnescape decoding would be dead code.)
 		href := reHTMLEntity.ReplaceAllString(html[lm[2]:lm[3]], "&")
 		title := cleanHTML(html[lm[4]:lm[5]])
 

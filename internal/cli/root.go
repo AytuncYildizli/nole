@@ -29,5 +29,6 @@ func newRootCommand(mcpCommand *cobra.Command) *cobra.Command {
 	cmd.AddCommand(newSetupCommand())
 	cmd.AddCommand(newVersionCommand())
 	cmd.AddCommand(newSelfUpdateCommand())
+	cmd.AddCommand(newDarkwebCommand())
 	return cmd
 }

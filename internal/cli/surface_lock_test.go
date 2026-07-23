@@ -19,6 +19,7 @@ var stableCommands = map[string]bool{
 	"providers":   true,
 	"doctor":      true,
 	"config":      true,
+	"darkweb":     true,
 	"mcp":         true,
 	"serve":       true,
 	"setup":       true,

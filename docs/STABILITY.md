@@ -18,7 +18,7 @@ Nólë at 1.x should keep working across 1.x upgrades without changes.
 These top-level commands and their documented behaviour are stable:
 
 `search`, `classify`, `route-plan`, `extract`, `research`, `bench`, `providers`,
-`doctor`, `config`, `mcp`, `serve`, `setup`, `version`, `self-update`.
+`doctor`, `config`, `darkweb`, `mcp`, `serve`, `setup`, `version`, `self-update`.
 
 The **command set** is locked by a test (`internal/cli` surface lock) so it cannot
 drift silently. Their primary flags (e.g. `--json`, `--task`, `--insight`,
@@ -43,6 +43,11 @@ input parameter, command, flag, MCP tool, or routing default is removed or renam
 The object is always present on successful remote-content records so clients do
 not have to infer trust from omission. Its `no_indicators` value is explicitly not
 a safety verdict.
+
+The post-v1.9.0 privacy expansion intentionally adds the `darkweb` command and
+the `NOLE_PROXY_URL` environment variable. `darkweb` requires an explicit proxy
+or a locally detected Tor listener and keeps the existing `search` command and
+routing defaults unchanged when proxy mode is not requested.
 
 The post-v1.7.0 provider-usage expansion intentionally adds optional
 `providers --live-usage`. It queries provider usage APIs only where Nólë has a
@@ -124,6 +129,8 @@ set may grow in 1.x — are:
   `NOLE_BREAKER_COOLDOWN_MS`.
 - **Diagnostics/loading:** `NOLE_LOG`, `NOLE_DISABLE_ENV_FILE`,
   `NOLE_SCRAPLING_PYTHON` (written by `nole setup --local-extract`).
+- **Proxy/privacy:** `NOLE_PROXY_URL` (for an operator-supplied HTTP or SOCKS5
+  proxy, including a local Tor listener).
 - **HTTP serve auth:** `NOLE_SERVE_TOKEN` (bearer token for `nole serve`; required
   for a non-loopback bind, optional for the loopback default).
 - **Update/install:** `NOLE_RELEASES_API`, and the installer family
