@@ -177,6 +177,25 @@ func (s *Service) Search(ctx context.Context, req SearchRequest) (SearchResponse
 	}
 }
 
+// SearchWithProvider runs a search through a specific named provider.
+// Useful for darkweb commands that want Ahmia directly.
+func (s *Service) SearchWithProvider(ctx context.Context, providerName string, req SearchRequest) (SearchResponse, error) {
+	if provider, ok := s.registry.Get(providerName); ok {
+		if HasCapability(provider.Capabilities(), CapabilitySearch) {
+			resp, err := provider.Search(ctx, req)
+			if err != nil {
+				return resp, err
+			}
+			resp.Query = req.Query
+			resp.Task = req.Task
+			resp.Provider = providerName
+			resp.Route = []string{providerName}
+			return resp, nil
+		}
+	}
+	return SearchResponse{}, fmt.Errorf("provider %s not available for search", providerName)
+}
+
 // resolveTask decides the task a search will route on, and how that task was
 // chosen. An explicitly-supplied known search task is honored verbatim
 // (supplied); otherwise — empty, unknown, or the extract key on a search call —

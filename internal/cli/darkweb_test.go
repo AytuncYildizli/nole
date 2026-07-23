@@ -82,6 +82,7 @@ func TestDarkwebCommandErrorsWithoutTor(t *testing.T) {
 			searchCalled = true
 			return core.SearchResponse{}, errors.New("search must not run")
 		},
+		func() *core.Service { return nil },
 	)
 	cmd.SetContext(context.Background())
 	err := cmd.RunE(cmd, []string{"darkweb test"})
@@ -112,6 +113,7 @@ func TestDarkwebCommandRunsWithProxyEnv(t *testing.T) {
 			}
 			return core.SearchResponse{}, nil
 		},
+		func() *core.Service { return nil },
 	)
 	cmd.SetContext(context.Background())
 	err := cmd.RunE(cmd, []string{"test query"})
