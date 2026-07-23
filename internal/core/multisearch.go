@@ -20,7 +20,7 @@ type MultiSearchResult struct {
 // that arrives first. If all fail, returns the last error.
 func MultiSearch(ctx context.Context, registry *Registry, req SearchRequest) (SearchResponse, error) {
 	// Candidate providers: try ddgs, brave, google, jina in priority order
-	candidates := []string{"ddgs", "brave", "google", "jinareader", "tavily"}
+	candidates := []string{"ahmia", "ddgs", "brave", "google", "jinareader", "tavily"}
 	active := make([]string, 0, len(candidates))
 
 	for _, name := range candidates {

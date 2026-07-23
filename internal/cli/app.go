@@ -13,6 +13,7 @@ import (
 
 	"github.com/dorukardahan/nole/internal/core"
 	"github.com/dorukardahan/nole/internal/nolelog"
+	"github.com/dorukardahan/nole/internal/providers/ahmia"
 	"github.com/dorukardahan/nole/internal/providers/arxiv"
 	"github.com/dorukardahan/nole/internal/providers/brave"
 	"github.com/dorukardahan/nole/internal/providers/ddgs"
@@ -118,6 +119,10 @@ func defaultService() *core.Service {
 	// parallel with other keyed providers. Unbreakered like other free fallbacks
 	// so the keyless path is never short-circuited.
 	_ = registry.Register(google.New())
+
+	// Ahmia — keyless-free .onion hidden service search engine. Provides
+	// real darkweb content (unlike DDGS onion endpoint which mirrors clearnet).
+	_ = registry.Register(ahmia.New())
 
 	entries := defaultQuotaEntries(braveKey, tavilyKey, effectiveFirecrawlKey)
 	ledger := defaultQuotaLedger(defaultQuotaPolicyFromEnv(), entries)

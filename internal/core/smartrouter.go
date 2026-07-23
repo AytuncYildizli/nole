@@ -69,6 +69,10 @@ func (sr *SmartRouter) SelectProvider(query string, task TaskType) (string, stri
 		if _, ok := sr.registry.Get("ddgs"); ok {
 			return "ddgs", proxyURL, nil
 		}
+		// Fallback: try Ahmia (real .onion index)
+		if _, ok := sr.registry.Get("ahmia"); ok {
+			return "ahmia", proxyURL, nil
+		}
 		return "", proxyURL, fmt.Errorf("ddgs provider not registered for onion search")
 	}
 
