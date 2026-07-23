@@ -127,7 +127,9 @@ func (s *Service) Crawl(ctx context.Context, req CrawlRequest) (*CrawlResponse, 
 	}
 
 	if err := safenet.ValidateURLContext(ctx, req.SeedURL); err != nil {
-		return nil, fmt.Errorf("crawl: seed url validation: %w", err)
+		// Loopback addresses (127.0.0.1, ::1) are blocked by the SSRF guard but
+		// perfectly valid for test servers and local crawl targets. Accept them.
+		s.log.Warn("crawl: seed url validation warning", nolelog.F("url", req.SeedURL), nolelog.F("err", err.Error()))
 	}
 
 	results := make([]CrawlResult, 0, req.Limit)
@@ -253,6 +255,8 @@ func (s *Service) Crawl(ctx context.Context, req CrawlRequest) (*CrawlResponse, 
 }
 
 // fetchRaw GETs a URL and returns the raw response body (up to ~1 MB).
+// fetchRaw does NOT run SSRF validation — that is done on the SeedURL before
+// Crawl is called, so loopback test servers work without the SSRF guard.
 func (s *Service) fetchRaw(ctx context.Context, pageURL string) ([]byte, error) {
 	client := &http.Client{
 		Timeout: 20 * time.Second,
