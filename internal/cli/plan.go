@@ -126,7 +126,7 @@ func validPlannerProvider(provider string) bool {
 	// are intentionally NOT valid here — `--providers httpfetch` correctly errors
 	// rather than emitting an unusable search plan for a provider that never searches.
 	// "arxiv" IS search-capable (academic route), so it belongs here, like wikipedia.
-	case "brave", "tavily", "firecrawl", "wikipedia", "arxiv", "ddgs":
+	case "brave", "tavily", "firecrawl", "wikipedia", "arxiv", "ddgs", "google":
 		return true
 	default:
 		return false

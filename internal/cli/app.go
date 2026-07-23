@@ -17,6 +17,7 @@ import (
 	"github.com/dorukardahan/nole/internal/providers/brave"
 	"github.com/dorukardahan/nole/internal/providers/ddgs"
 	"github.com/dorukardahan/nole/internal/providers/firecrawl"
+	"github.com/dorukardahan/nole/internal/providers/google"
 	"github.com/dorukardahan/nole/internal/providers/httpfetch"
 	"github.com/dorukardahan/nole/internal/providers/mock"
 	"github.com/dorukardahan/nole/internal/providers/providerhttp"
@@ -112,6 +113,12 @@ func defaultService() *core.Service {
 	// makes extract / search_and_extract work with zero keys and zero setup.
 	_ = registry.Register(httpfetch.New())
 
+	// Google PSE — keyless-free (100 queries/day), always registered. Unlike DDGS
+	// (last-resort fallback), Google is NOT the last resort — it is routed in
+	// parallel with other keyed providers. Unbreakered like other free fallbacks
+	// so the keyless path is never short-circuited.
+	_ = registry.Register(google.New())
+
 	entries := defaultQuotaEntries(braveKey, tavilyKey, effectiveFirecrawlKey)
 	ledger := defaultQuotaLedger(defaultQuotaPolicyFromEnv(), entries)
 
@@ -138,6 +145,7 @@ func defaultQuotaEntries(braveKey, tavilyKey, firecrawlKey string) []core.QuotaE
 		{Provider: "arxiv", CostClass: core.CostClassKeylessFree, KeylessFree: true},
 		{Provider: "scrapling", CostClass: core.CostClassKeylessFree, KeylessFree: true},
 		{Provider: "httpfetch", CostClass: core.CostClassKeylessFree, KeylessFree: true},
+		{Provider: "google", CostClass: core.CostClassKeylessFree, KeylessFree: true},
 	}
 }
 
