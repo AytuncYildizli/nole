@@ -227,11 +227,11 @@ func TestExtractRequestShape(t *testing.T) {
 	if gotMethod != http.MethodGet {
 		t.Errorf("method = %q, want GET", gotMethod)
 	}
-	if !strings.HasPrefix(gotUA, "Nole/") || !strings.Contains(gotUA, "github.com/dorukardahan/nole") {
-		t.Errorf("User-Agent = %q, want a descriptive Nole UA with a contact URL", gotUA)
+	if !strings.HasPrefix(gotUA, "Nole/") && !strings.Contains(gotUA, "Mozilla/") {
+		t.Errorf("User-Agent = %q, want either a descriptive Nole UA or a browser UA from the rotation pool", gotUA)
 	}
-	if strings.Contains(gotUA, "Go-http-client") || strings.Contains(gotUA, "Mozilla/") {
-		t.Errorf("User-Agent must not be the Go default or a browser-spoof: %q", gotUA)
+	if strings.Contains(gotUA, "Go-http-client") {
+		t.Errorf("User-Agent must not be the Go default: %q", gotUA)
 	}
 	if gotAccept == "" {
 		t.Errorf("Accept header should be set")

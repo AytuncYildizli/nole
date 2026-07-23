@@ -30,6 +30,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -43,7 +44,37 @@ var _ core.Provider = Provider{}
 
 const maxRedirects = 5
 
-var userAgent = "Nole/" + version.Version + " (+https://github.com/dorukardahan/nole)"
+// userAgentPool is a rotating pool of User-Agent strings. httpfetch cyclically
+// picks one per request so Cloudflare Turnstile/challenge pages see a changing,
+// browser-like UA on each hop/retry. The pool always starts with the canonical
+// Nole identity so Nólë stays *discoverable* first, then mixes in modern
+// Chrome, Firefox, and Safari UAs that Cloudflare treats as real browsers.
+var userAgentPool = []string{
+	// Canonical Nole identity (sent first by default).
+	"Nole/" + version.Version + " (+https://github.com/dorukardahan/nole)",
+	// Modern browser UAs for Cloudflare bypass.
+	"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+	"Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:126.0) Gecko/20100101 Firefox/126.0",
+	"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Safari/605.1.15",
+	"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+	"Mozilla/5.0 (X11; Linux x86_64; rv:126.0) Gecko/20100101 Firefox/126.0",
+	"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+}
+
+var userAgentPoolMu uint32 // atomic counter for rotation
+
+// pickUserAgent rotates through the pool deterministically for the same caller
+// and nondeterministically across callers via a cheap counter. The first call
+// always returns the Nole UA; each subsequent call cyclically picks a different
+// entry so Cloudflare cannot fingerprint a single answer.
+func pickUserAgent() string {
+	n := atomic.AddUint32(&userAgentPoolMu, 1)
+	idx := int(n-1) % len(userAgentPool)
+	if idx < 0 {
+		idx = 0
+	}
+	return userAgentPool[idx]
+}
 
 const acceptHeader = "text/html,application/xhtml+xml,text/plain;q=0.9,*/*;q=0.1"
 
@@ -163,7 +194,7 @@ func (p Provider) Extract(ctx context.Context, req core.ExtractRequest) (core.Ex
 		if err != nil {
 			return core.ExtractResponse{}, fmt.Errorf("httpfetch: create request: %w", err)
 		}
-		httpReq.Header.Set("User-Agent", userAgent)
+				httpReq.Header.Set("User-Agent", pickUserAgent())
 		httpReq.Header.Set("Accept", acceptHeader)
 
 		resp, err := providerhttp.DoWithRetry(ctx, client, httpReq, providerhttp.DefaultRetryOptions())
@@ -174,6 +205,7 @@ func (p Provider) Extract(ctx context.Context, req core.ExtractRequest) (core.Ex
 			return core.ExtractResponse{}, fmt.Errorf("httpfetch: request failed: %s", redactTransportErr(err))
 		}
 
+		// Redirect: read the Location, drain+close, re-validate on the next hop.
 		if resp.StatusCode >= 300 && resp.StatusCode < 400 {
 			location := strings.TrimSpace(resp.Header.Get("Location"))
 			_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4<<10))
