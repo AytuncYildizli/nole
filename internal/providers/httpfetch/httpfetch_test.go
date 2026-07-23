@@ -67,9 +67,9 @@ func TestNewHasDefaults(t *testing.T) {
 func TestSafeTransportDisablesProxy(t *testing.T) {
 	// The SSRF dial guard is only effective on a DIRECT connection: a proxy would
 	// resolve+fetch the target on its own network where the guard is blind. So the
-	// safe transport must NOT use a proxy.
-	if safeTransport().Proxy != nil {
-		t.Fatal("safeTransport must disable Proxy so the SSRF dial guard validates the real target, not a proxy")
+	// safe transport must NOT use a proxy (when NOLE_PROXY_URL is not set).
+	if newTransport(nil).Proxy != nil {
+		t.Fatal("newTransport(nil) must disable Proxy so the SSRF dial guard validates the real target, not a proxy")
 	}
 }
 

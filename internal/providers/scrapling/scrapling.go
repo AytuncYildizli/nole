@@ -193,7 +193,8 @@ func (p Provider) runHop(ctx context.Context, url, format string) (hopOutput, er
 }
 
 // execHop runs the Python subprocess for one fetch and parses its single JSON
-// line into a hopOutput.
+// line into a hopOutput. It passes NOLE_PROXY_URL to the child so Scrapling
+// can route through Tor / a SOCKS5 proxy for privacy/darkweb fetches.
 func (p Provider) execHop(ctx context.Context, url, format string) (hopOutput, error) {
 	payload := map[string]string{"url": url, "format": format}
 	stdin, err := json.Marshal(payload)
@@ -203,6 +204,12 @@ func (p Provider) execHop(ctx context.Context, url, format string) (hopOutput, e
 
 	cmd := exec.CommandContext(ctx, p.python, "-c", extractScript)
 	cmd.Stdin = bytes.NewReader(stdin)
+	// Pass NOLE_PROXY_URL to Scrapling's Python subprocess
+	proxyVal := os.Getenv("NOLE_PROXY_URL")
+	if proxyVal != "" {
+		cmd.Env = append(cmd.Env, "NOLE_PROXY_URL="+proxyVal,
+			"HTTP_PROXY="+proxyVal, "HTTPS_PROXY="+proxyVal)
+	}
 	stdout := newCappedBuffer(maxStdoutBytes)
 	stderr := newCappedBuffer(maxStderrBytes)
 	cmd.Stdout = stdout
