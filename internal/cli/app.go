@@ -19,8 +19,10 @@ import (
 	"github.com/dorukardahan/nole/internal/providers/ddgs"
 	"github.com/dorukardahan/nole/internal/providers/firecrawl"
 	"github.com/dorukardahan/nole/internal/providers/google"
+	"github.com/dorukardahan/nole/internal/providers/haystack"
 	"github.com/dorukardahan/nole/internal/providers/httpfetch"
 	"github.com/dorukardahan/nole/internal/providers/mock"
+	"github.com/dorukardahan/nole/internal/providers/onionengine"
 	"github.com/dorukardahan/nole/internal/providers/providerhttp"
 	"github.com/dorukardahan/nole/internal/providers/scrapling"
 	"github.com/dorukardahan/nole/internal/providers/tavily"
@@ -123,6 +125,14 @@ func defaultService() *core.Service {
 	// Ahmia — keyless-free .onion hidden service search engine. Provides
 	// real darkweb content (unlike DDGS onion endpoint which mirrors clearnet).
 	_ = registry.Register(ahmia.New())
+
+	// Haystack — keyless-free search engine for clearnet and dark web content.
+	// No API key needed. Supports Tor proxy for private browsing.
+	_ = registry.Register(haystack.New())
+
+	// OnionEngine — keyless-free search engine indexing clearnet and .onion
+	// content. No API key needed. Supports Tor proxy via NOLE_PROXY_URL.
+	_ = registry.Register(onionengine.New())
 
 	entries := defaultQuotaEntries(braveKey, tavilyKey, effectiveFirecrawlKey)
 	ledger := defaultQuotaLedger(defaultQuotaPolicyFromEnv(), entries)

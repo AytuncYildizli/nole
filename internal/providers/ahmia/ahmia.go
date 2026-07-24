@@ -3,59 +3,95 @@
 // endpoint (which is just DDG's clearnet index proxied through Tor), Ahmia
 // actually crawls Tor hidden services and indexes .onion content directly.
 //
-// Proxy support: requires NOLE_PROXY_URL (SOCKS5 through Tor) for .onion
-// discovery. Without a proxy, Ahmia clearnet endpoint returns the same HTML
-// but the onion links may not resolve.
+// Ahmia's .onion search page requires JavaScript rendering. This provider
+// uses a Scrapling Python helper script for JS render + DOM extraction,
+// communicating via a JSON stdin/stdout contract.
+//
+// Proxy: requires NOLE_PROXY_URL (SOCKS5 through Tor).
+// Clearnet fallback: disabled by design (Tor required).
 package ahmia
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
-	"net/http"
-	"net/url"
+	"net"
 	"os"
-	"regexp"
+	"os/exec"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/dorukardahan/nole/internal/core"
-	"github.com/dorukardahan/nole/internal/providers/providerhttp"
 )
 
-const ahmiaEndpoint = "https://ahmia.fi/search/"
+const DefaultTorHost = "127.0.0.1"
+const DefaultTorPort = 9050
 
+const nonJSBanner = "non-JavaScript"
+const helperTimeout = 45 * time.Second
+
+// Provider uses Scrapling Python helper for Ahmia search.
 type Provider struct {
-	httpClient *http.Client
+	helperPath string
 }
 
-var (
-	reResult    = regexp.MustCompile(`<li class="search-result"[^>]*>(.*?)</li>`)
-	reResultURL = regexp.MustCompile(`href="([^"]+)"`)
-	reTitle     = regexp.MustCompile(`<a[^>]*>(.*?)</a>`)
-	reSnippet   = regexp.MustCompile(`<p[^>]*>(.*?)</p>`)
-	reStripTags = regexp.MustCompile(`<[^>]+>`)
-	reHTMLEnt   = regexp.MustCompile(`&amp;|&#39;|&quot;|&lt;|&gt;`)
-)
+// helperRequest is sent via stdin to the Python helper.
+type helperRequest struct {
+	Query string `json:"query"`
+	Limit int    `json:"limit"`
+	Proxy string `json:"proxy"`
+}
 
+// helperResponse comes via stdout from the Python helper.
+type helperResponse struct {
+	Results []helperResult `json:"results"`
+	Error   string         `json:"error,omitempty"`
+	Detail  string         `json:"detail,omitempty"`
+}
+
+type helperResult struct {
+	Title   string `json:"title"`
+	URL     string `json:"url"`
+	Snippet string `json:"snippet"`
+}
+
+// New creates an Ahmia provider.
 func New() Provider {
-	transport := &http.Transport{
-		MaxIdleConns:          100,
-		IdleConnTimeout:       90 * time.Second,
-		TLSHandshakeTimeout:   10 * time.Second,
-		ExpectContinueTimeout: 1 * time.Second,
+	hp := findHelper()
+	return Provider{helperPath: hp}
+}
+
+func findHelper() string {
+	// Relative to the provider dir (development)
+	candidates := []string{
+		"/tmp/nole-doruk/internal/providers/ahmia/ahmia_search.py",
+		"internal/providers/ahmia/ahmia_search.py",
+		"ahmia_search.py",
 	}
-	// Proxy support via NOLE_PROXY_URL
-	if pu := os.Getenv("NOLE_PROXY_URL"); pu != "" {
-		if proxyURL, err := url.Parse(pu); err == nil {
-			transport.Proxy = http.ProxyURL(proxyURL)
+	// Try NOLE_AHMIA_HELPER env var first
+	if env := os.Getenv("NOLE_AHMIA_HELPER"); env != "" {
+		if _, err := os.Stat(env); err == nil {
+			return env
 		}
 	}
-	return Provider{
-		httpClient: &http.Client{
-			Transport: transport,
-			Timeout:   30 * time.Second,
-		},
+	for _, c := range candidates {
+		if _, err := os.Stat(c); err == nil {
+			abs, _ := filepath.Abs(c)
+			return abs
+		}
 	}
+	// Search from CWD
+	cwd, _ := os.Getwd()
+	for _, c := range candidates {
+		full := filepath.Join(cwd, c)
+		if _, err := os.Stat(full); err == nil {
+			return full
+		}
+	}
+	return candidates[0]
 }
 
 func (p Provider) Name() string { return "ahmia" }
@@ -65,65 +101,84 @@ func (p Provider) Capabilities() []core.Capability {
 }
 
 func (p Provider) Search(ctx context.Context, req core.SearchRequest) (core.SearchResponse, error) {
-	form := url.Values{}
-	form.Set("q", req.Query)
+	// Check Tor
+	proxyURL := resolveProxy()
+	if proxyURL == "" {
+		return core.SearchResponse{}, fmt.Errorf("ahmia: Tor not available — set NOLE_PROXY_URL or start Tor on port 9050")
+	}
 
-	endpoint := ahmiaEndpoint
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint+"?"+form.Encode(), nil)
+	// Check helper exists
+	if _, err := os.Stat(p.helperPath); os.IsNotExist(err) {
+		return core.SearchResponse{}, fmt.Errorf("ahmia: helper not found at %s", p.helperPath)
+	}
+
+	limit := req.Limit
+	if limit <= 0 || limit > 20 {
+		limit = 10
+	}
+
+	// Prepare JSON request
+	hreq := helperRequest{
+		Query: req.Query,
+		Limit: limit,
+		Proxy: proxyURL,
+	}
+	hreqBody, err := json.Marshal(hreq)
 	if err != nil {
-		return core.SearchResponse{}, fmt.Errorf("ahmia: create request: %w", err)
-	}
-	httpReq.Header.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36")
-	httpReq.Header.Set("Accept", "text/html")
-
-	resp, err := providerhttp.DoWithRetry(ctx, p.httpClient, httpReq, providerhttp.DefaultRetryOptions())
-	if err != nil {
-		return core.SearchResponse{}, fmt.Errorf("ahmia: request failed: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := providerhttp.ReadAllLimited(resp.Body, providerhttp.MaxSearchResponseBytes)
-		return core.SearchResponse{}, providerhttp.NewHTTPStatusError("ahmia", "search", resp.StatusCode, body)
+		return core.SearchResponse{}, fmt.Errorf("ahmia: marshal request: %w", err)
 	}
 
-	body, err := providerhttp.ReadAllLimited(resp.Body, providerhttp.MaxSearchResponseBytes)
-	if err != nil {
-		return core.SearchResponse{}, fmt.Errorf("ahmia: read response: %w", err)
+	// Execute helper
+	ctx, cancel := context.WithTimeout(ctx, helperTimeout)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "python3", p.helperPath)
+	cmd.Stdin = bytes.NewReader(hreqBody)
+
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	if err := cmd.Run(); err != nil {
+		// Check if context deadline caused the exit
+		if ctx.Err() != nil {
+			return core.SearchResponse{}, fmt.Errorf("ahmia: helper timeout (%s)", helperTimeout)
+		}
+		stderrStr := strings.TrimSpace(stderr.String())
+		return core.SearchResponse{}, fmt.Errorf("ahmia: helper error: %v (stderr: %s)", err, stderrStr)
 	}
-	html := string(body)
 
-	results := make([]core.SearchResult, 0)
-	liMatches := reResult.FindAllStringSubmatch(html, -1)
+	// Parse JSON response
+	var hresp helperResponse
+	if err := json.Unmarshal(stdout.Bytes(), &hresp); err != nil {
+		return core.SearchResponse{}, fmt.Errorf("ahmia: helper JSON parse: %w (stdout: %s)", err, stdout.String()[:min(500, stdout.Len())])
+	}
 
-	for _, li := range liMatches {
-		liHTML := li[1]
-		urlMatch := reResultURL.FindStringSubmatch(liHTML)
-		titleMatch := reTitle.FindStringSubmatch(liHTML)
-		snippetMatch := reSnippet.FindStringSubmatch(liHTML)
-
-		if len(urlMatch) < 2 || len(titleMatch) < 2 {
+	// Extract
+	results := make([]core.SearchResult, 0, len(hresp.Results))
+	for _, hr := range hresp.Results {
+		title := strings.TrimSpace(hr.Title)
+		url := strings.TrimSpace(hr.URL)
+		if title == "" && url == "" {
 			continue
 		}
-
-		link := urlMatch[1]
-		title := cleanHTML(titleMatch[1])
-		snippet := ""
-		if len(snippetMatch) >= 2 {
-			snippet = cleanHTML(snippetMatch[1])
-		}
-		snippet = core.TruncateRunes(snippet, 300)
-
 		results = append(results, core.SearchResult{
 			Title:    title,
-			URL:      link,
-			Snippet:  snippet,
+			URL:      url,
+			Snippet:  strings.TrimSpace(hr.Snippet),
 			Provider: "ahmia",
 		})
+	}
 
-		if req.Limit > 0 && len(results) >= req.Limit {
-			break
+	// Check for render failure
+	if hresp.Error != "" {
+		if len(results) == 0 {
+			if strings.Contains(hresp.Error, "render_failed") {
+				return core.SearchResponse{}, fmt.Errorf("ahmia: render failed: %s", hresp.Detail)
+			}
+			return core.SearchResponse{}, fmt.Errorf("ahmia: %s: %s", hresp.Error, hresp.Detail)
 		}
+		// Partial results with error warning
 	}
 
 	return core.SearchResponse{
@@ -139,34 +194,43 @@ func (p Provider) Extract(ctx context.Context, req core.ExtractRequest) (core.Ex
 }
 
 func (p Provider) Status(ctx context.Context) core.ProviderStatus {
+	available := true
+	var issues []string
+
+	if resolveProxy() == "" {
+		available = false
+		issues = append(issues, "Tor not available")
+	}
+	if _, err := os.Stat(p.helperPath); os.IsNotExist(err) {
+		available = false
+		issues = append(issues, fmt.Sprintf("helper not found at %s", p.helperPath))
+	}
+
 	return core.ProviderStatus{
 		Name:         p.Name(),
-		Available:    true,
+		Available:    available,
 		Capabilities: p.Capabilities(),
 	}
 }
 
-func cleanHTML(s string) string {
-	s = reStripTags.ReplaceAllString(s, "")
-	s = reHTMLEnt.ReplaceAllStringFunc(s, func(match string) string {
-		switch match {
-		case "&amp;":
-			return "&"
-		case "&#39;":
-			return "'"
-		case "&quot;":
-			return `"`
-		case "&lt;":
-			return "<"
-		case "&gt;":
-			return ">"
-		}
-		return match
-	})
-	s = strings.ReplaceAll(s, "\n", " ")
-	s = strings.TrimSpace(s)
-	for strings.Contains(s, "  ") {
-		s = strings.ReplaceAll(s, "  ", " ")
+// resolveProxy returns the SOCKS5 proxy URL to use.
+func resolveProxy() string {
+	if pu := os.Getenv("NOLE_PROXY_URL"); pu != "" {
+		return pu
 	}
-	return s
+	// Auto-detect Tor
+	conn, err := net.DialTimeout("tcp", net.JoinHostPort(DefaultTorHost, strconv.Itoa(DefaultTorPort)), 2*time.Second)
+	if err == nil {
+		conn.Close()
+		return fmt.Sprintf("socks5://%s:%d", DefaultTorHost, DefaultTorPort)
+	}
+	return ""
+}
+
+// searchEndpoint returns the Ahmia onion endpoint with proxy.
+func (p Provider) searchEndpoint() string {
+	if resolveProxy() != "" {
+		return "http://juhanurmihxlp77nkq76byazcldy2hlmovfu2epvl5ankdibsot4csyd.onion/search/"
+	}
+	return "https://ahmia.fi/search/"
 }

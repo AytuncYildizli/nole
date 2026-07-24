@@ -25,11 +25,12 @@ func newDarkwebCommandWithDeps(
 
 	cmd := &cobra.Command{
 		Use:   "darkweb <query>",
-		Short: "Search the dark web (.onion) via Tor proxy + Ahmia",
-		Long: `Search the dark web using Ahmia.fi hidden-service index through a Tor proxy.
+		Short: "Search the dark web (.onion) via Tor proxy + Ahmia/Haystack/OnionEngine",
+		Long: `Search the dark web using Ahmia.fi hidden-service index, Haystak, or OnionEngine
+through a Tor proxy.
 
-Ahmia indexes real .onion hidden services (unlike DDGS onion endpoint which
-mirrors clearnet). Falls back to standard search if Ahmia returns no results.
+Ahmia indexes real .onion hidden services. Haystak and OnionEngine provide
+additional clearnet + .onion coverage as fallback providers.
 
 The command automatically detects Tor by:
   1. Checking NOLE_PROXY_URL environment variable
@@ -80,7 +81,53 @@ If neither is available, it prints an error suggesting to start Tor first.`,
 				}
 			}
 
-			// Fallback: normal search through Tor proxy
+			// Fallback: try Haystack (clearnet + .onion index)
+			if svc != nil {
+				haystackResp, haystackErr := svc.SearchWithProvider(cmd.Context(), "haystack", core.SearchRequest{
+					Query: args[0],
+					Limit: limit,
+				})
+				if haystackErr == nil && len(haystackResp.Results) > 0 {
+					haystackResp = applySearchInsightMode(haystackResp, insightMode)
+					if jsonOut {
+						return writeJSONTo(cmd.OutOrStdout(), haystackResp)
+					}
+					writeHumanRoutingInsight(cmd.OutOrStdout(), haystackResp.RoutingInsight, haystackResp.RouteTrace, insightMode)
+					if haystackResp.TaskSource != "" && insightMode != core.InsightOff {
+						fmt.Fprintf(cmd.OutOrStdout(), "Task: %s (%s)\n", haystackResp.Task, haystackResp.TaskSource)
+					}
+					for _, result := range haystackResp.Results {
+						writeHumanContentSafety(cmd.OutOrStdout(), result.ContentSafety)
+						fmt.Fprintf(cmd.OutOrStdout(), "%s\n%s\n%s\n\n", result.Title, result.URL, result.Snippet)
+					}
+					return nil
+				}
+			}
+
+			// Fallback: try OnionEngine (enterprise threat intel + .onion search)
+			if svc != nil {
+				oeResp, oeErr := svc.SearchWithProvider(cmd.Context(), "onionengine", core.SearchRequest{
+					Query: args[0],
+					Limit: limit,
+				})
+				if oeErr == nil && len(oeResp.Results) > 0 {
+					oeResp = applySearchInsightMode(oeResp, insightMode)
+					if jsonOut {
+						return writeJSONTo(cmd.OutOrStdout(), oeResp)
+					}
+					writeHumanRoutingInsight(cmd.OutOrStdout(), oeResp.RoutingInsight, oeResp.RouteTrace, insightMode)
+					if oeResp.TaskSource != "" && insightMode != core.InsightOff {
+						fmt.Fprintf(cmd.OutOrStdout(), "Task: %s (%s)\n", oeResp.Task, oeResp.TaskSource)
+					}
+					for _, result := range oeResp.Results {
+						writeHumanContentSafety(cmd.OutOrStdout(), result.ContentSafety)
+						fmt.Fprintf(cmd.OutOrStdout(), "%s\n%s\n%s\n\n", result.Title, result.URL, result.Snippet)
+					}
+					return nil
+				}
+			}
+
+			// Final fallback: normal search through Tor proxy
 			queryLower := strings.ToLower(args[0])
 			task := core.TaskGeneral
 			if strings.Contains(queryLower, ".onion") || strings.Contains(queryLower, "onion ") || strings.Contains(queryLower, "tor ") {

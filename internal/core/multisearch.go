@@ -19,8 +19,8 @@ type MultiSearchResult struct {
 // and returns the best result: the one with the most results (up to limit)
 // that arrives first. If all fail, returns the last error.
 func MultiSearch(ctx context.Context, registry *Registry, req SearchRequest) (SearchResponse, error) {
-	// Candidate providers: try ddgs, brave, google, jina in priority order
-	candidates := []string{"ahmia", "ddgs", "brave", "google", "jinareader", "tavily"}
+	// Candidate providers: try haystack, onionengine, ddgs, brave, google, jina in priority order
+	candidates := []string{"ahmia", "haystack", "onionengine", "ddgs", "brave", "google", "jinareader", "tavily"}
 	active := make([]string, 0, len(candidates))
 
 	for _, name := range candidates {

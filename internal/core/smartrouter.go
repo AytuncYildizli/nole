@@ -73,7 +73,15 @@ func (sr *SmartRouter) SelectProvider(query string, task TaskType) (string, stri
 		if _, ok := sr.registry.Get("ahmia"); ok {
 			return "ahmia", proxyURL, nil
 		}
-		return "", proxyURL, fmt.Errorf("ddgs provider not registered for onion search")
+		// Fallback: try Haystack (clearnet + .onion index)
+		if _, ok := sr.registry.Get("haystack"); ok {
+			return "haystack", proxyURL, nil
+		}
+		// Fallback: try OnionEngine (enterprise threat intel + public search)
+		if _, ok := sr.registry.Get("onionengine"); ok {
+			return "onionengine", proxyURL, nil
+		}
+		return "", proxyURL, fmt.Errorf("no onion-capable provider registered")
 	}
 
 	// Proxy is set but query is normal — use ddgs through Tor for privacy
