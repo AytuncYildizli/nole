@@ -3,8 +3,8 @@ package cli
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
-	"strings"
 
 	"github.com/dorukardahan/nole/internal/core"
 	"github.com/spf13/cobra"
@@ -55,8 +55,6 @@ If neither is available, it prints an error suggesting to start Tor first.`,
 				return fmt.Errorf("set NOLE_PROXY_URL: %w", err)
 			}
 
-			fmt.Fprintf(cmd.ErrOrStderr(), "Using proxy: %s\n", proxyURL)
-
 			// Try Ahmia first (real .onion index)
 			svc := svcFn()
 			if svc != nil {
@@ -65,77 +63,42 @@ If neither is available, it prints an error suggesting to start Tor first.`,
 					Limit: limit,
 				})
 				if ahmiaErr == nil && len(ahmiaResp.Results) > 0 {
-					ahmiaResp = applySearchInsightMode(ahmiaResp, insightMode)
 					if jsonOut {
 						return writeJSONTo(cmd.OutOrStdout(), ahmiaResp)
 					}
-					writeHumanRoutingInsight(cmd.OutOrStdout(), ahmiaResp.RoutingInsight, ahmiaResp.RouteTrace, insightMode)
-					if ahmiaResp.TaskSource != "" && insightMode != core.InsightOff {
-						fmt.Fprintf(cmd.OutOrStdout(), "Task: %s (%s)\n", ahmiaResp.Task, ahmiaResp.TaskSource)
-					}
-					for _, result := range ahmiaResp.Results {
-						writeHumanContentSafety(cmd.OutOrStdout(), result.ContentSafety)
-						fmt.Fprintf(cmd.OutOrStdout(), "%s\n%s\n%s\n\n", result.Title, result.URL, result.Snippet)
-					}
+					writeWhatsAppResults(cmd.OutOrStdout(), ahmiaResp.Results)
 					return nil
 				}
-			}
 
-			// Fallback: try Haystack (clearnet + .onion index)
-			if svc != nil {
+				// Fallback: try Haystack
 				haystackResp, haystackErr := svc.SearchWithProvider(cmd.Context(), "haystack", core.SearchRequest{
 					Query: args[0],
 					Limit: limit,
 				})
 				if haystackErr == nil && len(haystackResp.Results) > 0 {
-					haystackResp = applySearchInsightMode(haystackResp, insightMode)
 					if jsonOut {
 						return writeJSONTo(cmd.OutOrStdout(), haystackResp)
 					}
-					writeHumanRoutingInsight(cmd.OutOrStdout(), haystackResp.RoutingInsight, haystackResp.RouteTrace, insightMode)
-					if haystackResp.TaskSource != "" && insightMode != core.InsightOff {
-						fmt.Fprintf(cmd.OutOrStdout(), "Task: %s (%s)\n", haystackResp.Task, haystackResp.TaskSource)
-					}
-					for _, result := range haystackResp.Results {
-						writeHumanContentSafety(cmd.OutOrStdout(), result.ContentSafety)
-						fmt.Fprintf(cmd.OutOrStdout(), "%s\n%s\n%s\n\n", result.Title, result.URL, result.Snippet)
-					}
+					writeWhatsAppResults(cmd.OutOrStdout(), haystackResp.Results)
 					return nil
 				}
-			}
 
-			// Fallback: try OnionEngine (enterprise threat intel + .onion search)
-			if svc != nil {
+				// Fallback: try OnionEngine
 				oeResp, oeErr := svc.SearchWithProvider(cmd.Context(), "onionengine", core.SearchRequest{
 					Query: args[0],
 					Limit: limit,
 				})
 				if oeErr == nil && len(oeResp.Results) > 0 {
-					oeResp = applySearchInsightMode(oeResp, insightMode)
 					if jsonOut {
 						return writeJSONTo(cmd.OutOrStdout(), oeResp)
 					}
-					writeHumanRoutingInsight(cmd.OutOrStdout(), oeResp.RoutingInsight, oeResp.RouteTrace, insightMode)
-					if oeResp.TaskSource != "" && insightMode != core.InsightOff {
-						fmt.Fprintf(cmd.OutOrStdout(), "Task: %s (%s)\n", oeResp.Task, oeResp.TaskSource)
-					}
-					for _, result := range oeResp.Results {
-						writeHumanContentSafety(cmd.OutOrStdout(), result.ContentSafety)
-						fmt.Fprintf(cmd.OutOrStdout(), "%s\n%s\n%s\n\n", result.Title, result.URL, result.Snippet)
-					}
+					writeWhatsAppResults(cmd.OutOrStdout(), oeResp.Results)
 					return nil
 				}
 			}
 
-			// Final fallback: normal search through Tor proxy
-			queryLower := strings.ToLower(args[0])
-			task := core.TaskGeneral
-			if strings.Contains(queryLower, ".onion") || strings.Contains(queryLower, "onion ") || strings.Contains(queryLower, "tor ") {
-				task = core.TaskGeneral
-			}
-
-			resp, searchErr := search(cmd.Context(), args[0], task, limit, core.SearchOptions{})
-			resp = applySearchInsightMode(resp, insightMode)
+			// Final fallback: standard search through Tor proxy
+			resp, searchErr := search(cmd.Context(), args[0], core.TaskGeneral, limit, core.SearchOptions{})
 			if searchErr != nil {
 				if jsonOut {
 					_ = writeJSONTo(cmd.OutOrStdout(), buildCLIErrorWithInsightMode("darkweb", searchErr, resp.Route, resp.RouteTrace, insightMode))
@@ -145,14 +108,7 @@ If neither is available, it prints an error suggesting to start Tor first.`,
 			if jsonOut {
 				return writeJSONTo(cmd.OutOrStdout(), resp)
 			}
-			writeHumanRoutingInsight(cmd.OutOrStdout(), resp.RoutingInsight, resp.RouteTrace, insightMode)
-			if resp.TaskSource != "" && insightMode != core.InsightOff {
-				fmt.Fprintf(cmd.OutOrStdout(), "Task: %s (%s)\n", resp.Task, resp.TaskSource)
-			}
-			for _, result := range resp.Results {
-				writeHumanContentSafety(cmd.OutOrStdout(), result.ContentSafety)
-				fmt.Fprintf(cmd.OutOrStdout(), "%s\n%s\n%s\n\n", result.Title, result.URL, result.Snippet)
-			}
+			writeWhatsAppResults(cmd.OutOrStdout(), resp.Results)
 			return nil
 		},
 	}
@@ -174,3 +130,11 @@ type darkwebSearchFunc func(
 
 // svcFunc returns a Service instance.
 type svcFunc func() *core.Service
+
+// writeWhatsAppResults prints search results in WhatsApp-friendly format.
+// Simple: each result as [bold title] + URL + snippet line.
+func writeWhatsAppResults(w io.Writer, results []core.SearchResult) {
+	for _, r := range results {
+		fmt.Fprintf(w, "%s\n%s\n%s\n\n", r.Title, r.URL, r.Snippet)
+	}
+}
