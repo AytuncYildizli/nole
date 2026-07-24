@@ -458,7 +458,7 @@ def _search(query: str, limit: int, proxy: ProxyConfig, deadline: float) -> list
             if deadline - time.monotonic() <= 0.5:
                 raise OverallTimeout()
             try:
-                return _render_attempt(playwright, engine_name, AHMIA_CLEARNET, query, limit, deadline, None)
+                return _render_attempt(playwright, engine_name, AHMIA_CLEARNET, query, limit, deadline, proxy)
             except AttemptError as exc:
                 clearnet_failures.append(exc.kind)
                 if exc.kind == "timeout":
