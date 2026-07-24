@@ -31,7 +31,7 @@ const DefaultTorHost = "127.0.0.1"
 const DefaultTorPort = 9050
 
 const nonJSBanner = "non-JavaScript"
-const helperTimeout = 45 * time.Second
+const helperTimeout = 90 * time.Second
 
 // Provider uses Scrapling Python helper for Ahmia search.
 type Provider struct {
@@ -213,16 +213,19 @@ func (p Provider) Status(ctx context.Context) core.ProviderStatus {
 	}
 }
 
-// resolveProxy returns the SOCKS5 proxy URL to use.
+// resolveProxy returns the SOCKS5 proxy URL to use, normalized to socks5h for .onion.
 func resolveProxy() string {
 	if pu := os.Getenv("NOLE_PROXY_URL"); pu != "" {
+		if strings.HasPrefix(pu, "socks5://") {
+			return strings.Replace(pu, "socks5://", "socks5h://", 1)
+		}
 		return pu
 	}
 	// Auto-detect Tor
 	conn, err := net.DialTimeout("tcp", net.JoinHostPort(DefaultTorHost, strconv.Itoa(DefaultTorPort)), 2*time.Second)
 	if err == nil {
 		conn.Close()
-		return fmt.Sprintf("socks5://%s:%d", DefaultTorHost, DefaultTorPort)
+		return fmt.Sprintf("socks5h://%s:%d", DefaultTorHost, DefaultTorPort)
 	}
 	return ""
 }

@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """
-Ahmia .onion search via Scrapling (Playwright) over Tor SOCKS5.
+Ahmia .onion search via Scrapling StealthyFetcher (Playwright) over Tor SOCKS5.
 
 Reads from stdin:   {"query": "...", "limit": 10, "proxy": "socks5://127.0.0.1:9050"}
 Writes to stdout:   {"results": [{"title": "...", "url": "...", "snippet": "..."}], "error": null}
 
-On failure:         {"error": "render_failed|timeout|tor_unreachable", "detail": "..."}
+On failure:         {"error": "render_failed|timeout|tor_unreachable|helper_error", "detail": "..."}
 """
 
 from __future__ import annotations
@@ -14,16 +14,13 @@ import json
 import os
 import re
 import sys
-import tempfile
 import time
-from pathlib import Path
 from urllib.parse import quote_plus
 
 AHMIA_ONION = "http://juhanurmihxlp77nkq76byazcldy2hlmovfu2epvl5ankdibsot4csyd.onion/search/?q={query}"
-AHMIA_CLEARNET = "https://ahmia.fi/search/?q={query}"
+NON_JS_MARKERS = ["non-JavaScript", "not deploy", "non-javascript"]
 
-TIMEOUT_MS = int(os.environ.get("TIMEOUT_MS", "30000"))
-BROWSER_HEADLESS = os.environ.get("BROWSER_HEADLESS", "1") == "1"
+TIMEOUT_MS = int(os.environ.get("TIMEOUT_MS", "60000"))
 
 
 def main():
@@ -38,23 +35,28 @@ def main():
     proxy = req.get("proxy", os.environ.get("NOLE_PROXY_URL", "socks5://127.0.0.1:9050"))
 
     if not query:
-        write_result({"error": "no_query", "detail": "query is required"})
+        write_result({"error": "helper_error", "detail": "query is required"})
         return
 
-    # Build Ahmia onion URL
+    # Normalize proxy to socks5h for .onion DNS resolution
+    if proxy.startswith("socks5://"):
+        proxy_socks5h = proxy.replace("socks5://", "socks5h://", 1)
+    else:
+        proxy_socks5h = proxy
+
     url = AHMIA_ONION.format(query=quote_plus(query))
 
     try:
-        results = render_and_extract(url, proxy, limit)
+        results = scrapling_search(url, proxy_socks5h, limit)
         write_result({"results": results})
     except ScraplingTimeout:
-        write_result({"error": "timeout", "detail": "render did not complete within timeout"})
+        write_result({"error": "timeout", "detail": "Scrapling render timeout"})
     except TorUnreachable:
-        write_result({"error": "tor_unreachable", "detail": f"cannot connect to proxy {proxy}"})
+        write_result({"error": "tor_unreachable", "detail": f"proxy {proxy} unreachable"})
     except RenderFailed as e:
         write_result({"error": "render_failed", "detail": str(e)})
-    except ScraplingNotFound:
-        write_result({"error": "scrapling_not_found", "detail": "scrapling or playwright not installed"})
+    except ImportError as e:
+        write_result({"error": "helper_error", "detail": f"Scrapling/Playwright import: {e}"})
 
 
 class ScraplingTimeout(Exception):
@@ -69,99 +71,105 @@ class RenderFailed(Exception):
     pass
 
 
-class ScraplingNotFound(Exception):
-    pass
+def scrapling_search(url: str, proxy: str, limit: int) -> list[dict]:
+    """Use Scrapling StealthyFetcher (Playwright) to render Ahmia through Tor."""
+    import scrapling
+    from scrapling import StealthyFetcher
 
-
-def render_and_extract(url: str, proxy: str, limit: int) -> list[dict]:
-    """Use Scrapling to render Ahmia search page through Tor, extract results."""
-    try:
-        import scrapling
-        from scrapling import Fetcher
-    except ImportError:
-        raise ScraplingNotFound()
-
-    fetcher = Fetcher(
-        headless=BROWSER_HEADLESS,
+    # StealthyFetcher uses Playwright under the hood with anti-detection
+    fetcher = StealthyFetcher(
+        headless=True,
         proxy=proxy,
         stealth=True,
     )
 
+    page = None
     try:
-        page = fetcher.get(url, timeout_ms=TIMEOUT_MS)
-    except ConnectionError:
-        raise TorUnreachable()
+        page = fetcher.get(url, timeout=TIMEOUT_MS)
     except Exception as e:
-        if "timeout" in str(e).lower():
+        err = str(e).lower()
+        if "timeout" in err or "timed out" in err:
             raise ScraplingTimeout()
-        raise RenderFailed(f"navigation error: {e}")
+        if "proxy" in err or "connect" in err or "dns" in err or "tor" in err:
+            raise TorUnreachable()
+        raise RenderFailed(f"fetch error: {e}")
 
     if page is None:
         raise RenderFailed("fetcher returned None")
 
-    # Check for non-JS banner
-    body_text = page.text()
-    if page.status == 200 and ("non-JavaScript" in body_text or "not deploy" in body_text):
-        if len(body_text) < 2000:
-            raise RenderFailed("non-JS page (JS never ran)")
+    # Wait for JS to settle
+    try:
+        page.wait_for_selector("a[href*=\".onion\"]", timeout=15000)
+    except Exception:
+        pass  # results may not use .onion links directly
 
-    # Extract results - look for result-like elements
-    results = []
-    non_js_marker_found = "non-JavaScript" in body_text or "not deploy" in body_text
-
-    # Try HTML parsing directly from the page content
     html = page.content()
-    if html:
-        results = parse_html_results(html, limit)
+    text = page.text() or ""
+
+    # Check for non-JS marker
+    for marker in NON_JS_MARKERS:
+        if marker in text:
+            raise RenderFailed(f"non-JS page (JS never ran), marker: {marker}")
+
+    # Parse results
+    results = parse_ahmia_results(html, limit)
 
     if results:
         return results
 
-    # Fallback: use page.evaluate for JS-rendered content
+    # Fallback: extract from JS-evaluated content
     try:
         js_results = page.evaluate("""
             () => {
                 const items = [];
-                document.querySelectorAll('a[href*=".onion"]').forEach(a => {
-                    const parent = a.closest('li, .result, [class*="result"]');
+                const links = document.querySelectorAll('a[href*=".onion"]');
+                links.forEach(a => {
+                    const parent = a.closest('li, .result, [class*="result"], div');
                     if (parent) {
-                        const snippet = parent.querySelector('p, .snippet, .description');
+                        const snippet = parent.querySelector('p, .snippet, .description, .text');
                         items.push({
-                            title: a.textContent.trim(),
-                            url: a.getAttribute('href'),
-                            snippet: snippet ? snippet.textContent.trim() : ''
+                            title: (a.textContent || '').trim(),
+                            url: a.getAttribute('href') || '',
+                            snippet: snippet ? (snippet.textContent || '').trim() : ''
                         });
                     }
                 });
-                return items.slice(0, %d);
+                if (items.length === 0 && links.length > 0) {
+                    links.forEach(a => {
+                        items.push({
+                            title: (a.textContent || '').trim(),
+                            url: a.getAttribute('href') || '',
+                            snippet: ''
+                        });
+                    });
+                }
+                return items;
             }
-        """ % limit)
+        """)
         if js_results:
-            return js_results
+            return js_results[:limit]
     except Exception:
         pass
 
-    # Last resort: regex search for .onion links
+    # Last-resort regex for .onion links
     results = parse_onion_links(html, limit)
-    if results and not non_js_marker_found:
+    if results:
         return results
 
-    if non_js_marker_found:
-        raise RenderFailed("non-JS page (JS never ran)")
-    return results
+    raise RenderFailed("no results found after render")
 
 
-def parse_html_results(html: str, limit: int) -> list[dict]:
-    """Parse Ahmia HTML for result items."""
+def parse_ahmia_results(html: str, limit: int) -> list[dict]:
+    """Parse Ahmia HTML for search results with multiple strategies."""
     results = []
-    # Look for common patterns in search engine result pages
-    patterns = [
+    strategies = [
         (r'<div[^>]*class="result"[^>]*>(.*?)</div>', re.DOTALL),
         (r'<li[^>]*class="result"[^>]*>(.*?)</li>', re.DOTALL),
         (r'<div[^>]*class="search-result"[^>]*>(.*?)</div>', re.DOTALL),
+        (r'<li[^>]*class="search-result"[^>]*>(.*?)</li>', re.DOTALL),
     ]
 
-    for pat, flags in patterns:
+    for pat, flags in strategies:
         items = re.findall(pat, html, flags)
         if items:
             for item_html in items:
@@ -174,18 +182,19 @@ def parse_html_results(html: str, limit: int) -> list[dict]:
                     snippet = ""
                     if snippet_m:
                         snippet = re.sub(r'<[^>]+>', '', snippet_m.group(1)).strip()
-                    results.append({
-                        "title": title,
-                        "url": url,
-                        "snippet": snippet[:300],
-                    })
-                    if len(results) >= limit:
-                        return results
+                    if title or url:
+                        results.append({
+                            "title": title,
+                            "url": url,
+                            "snippet": snippet[:300],
+                        })
+                        if len(results) >= limit:
+                            return results
     return results
 
 
 def parse_onion_links(html: str, limit: int) -> list[dict]:
-    """Extract .onion links as fallback."""
+    """Extract .onion links as last fallback."""
     onion_links = re.findall(
         r'<a[^>]*href="(https?://[^"]*\.onion[^"]*)"[^>]*>(.*?)</a>',
         html,
@@ -206,7 +215,6 @@ def parse_onion_links(html: str, limit: int) -> list[dict]:
 
 
 def write_result(data: dict):
-    """Write JSON result to stdout."""
     json.dump(data, sys.stdout, ensure_ascii=False, indent=2)
     print()
 

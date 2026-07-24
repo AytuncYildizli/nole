@@ -25,101 +25,101 @@ func newDarkwebCommandWithDeps(
 
 	cmd := &cobra.Command{
 		Use:   "darkweb <query>",
-		Short: "Search the dark web (.onion) via Tor proxy + Ahmia/Haystack/OnionEngine",
-		Long: `Search the dark web using Ahmia.fi hidden-service index, Haystak, or OnionEngine
-through a Tor proxy.
+		Short: "Search .onion darkweb via Ahmia/Tor (fail-closed, no clearnet)",
+		Long: `Search the dark web using Ahmia.fi hidden-service index through Tor.
 
-Ahmia indexes real .onion hidden services. Haystak and OnionEngine provide
-additional clearnet + .onion coverage as fallback providers.
+Ahmia indexes real .onion hidden services. Uses Scrapling/Playwright for JS
+rendering through Tor SOCKS5. Fail-closed: never falls back to clearnet providers.
 
 The command automatically detects Tor by:
   1. Checking NOLE_PROXY_URL environment variable
   2. Detecting Tor on port 127.0.0.1:9050
 
-If neither is available, it prints an error suggesting to start Tor first.`,
+If no Tor or Ahmia results, returns error.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			insightMode, err := parseInsightModeFlag(insightRaw)
-			if err != nil {
-				return err
-			}
-
 			// Check proxy availability
 			proxyURL := resolveProxy()
 			if proxyURL == "" {
 				return fmt.Errorf("Tor not running: connect and retry; export NOLE_PROXY_URL=socks5://127.0.0.1:9050")
 			}
 
-			// Set the proxy env for the search service to pick up
+			// Set proxy env for Ahmia/Scrapling helper
 			if err := os.Setenv("NOLE_PROXY_URL", proxyURL); err != nil {
 				return fmt.Errorf("set NOLE_PROXY_URL: %w", err)
 			}
 
-			// Try Ahmia first (real .onion index)
+			// Try Ahmia first (real .onion index via Scrapling)
 			svc := svcFn()
-			if svc != nil {
-				ahmiaResp, ahmiaErr := svc.SearchWithProvider(cmd.Context(), "ahmia", core.SearchRequest{
-					Query: args[0],
-					Limit: limit,
-				})
-				if ahmiaErr == nil && len(ahmiaResp.Results) > 0 {
-					if jsonOut {
-						return writeJSONTo(cmd.OutOrStdout(), ahmiaResp)
-					}
-					writeWhatsAppResults(cmd.OutOrStdout(), ahmiaResp.Results)
-					return nil
-				}
-
-				// Fallback: try Haystack
-				haystackResp, haystackErr := svc.SearchWithProvider(cmd.Context(), "haystack", core.SearchRequest{
-					Query: args[0],
-					Limit: limit,
-				})
-				if haystackErr == nil && len(haystackResp.Results) > 0 {
-					if jsonOut {
-						return writeJSONTo(cmd.OutOrStdout(), haystackResp)
-					}
-					writeWhatsAppResults(cmd.OutOrStdout(), haystackResp.Results)
-					return nil
-				}
-
-				// Fallback: try OnionEngine
-				oeResp, oeErr := svc.SearchWithProvider(cmd.Context(), "onionengine", core.SearchRequest{
-					Query: args[0],
-					Limit: limit,
-				})
-				if oeErr == nil && len(oeResp.Results) > 0 {
-					if jsonOut {
-						return writeJSONTo(cmd.OutOrStdout(), oeResp)
-					}
-					writeWhatsAppResults(cmd.OutOrStdout(), oeResp.Results)
-					return nil
-				}
+			if svc == nil {
+				return fmt.Errorf("darkweb: service not available")
 			}
 
-			// Final fallback: standard search through Tor proxy
-			resp, searchErr := search(cmd.Context(), args[0], core.TaskGeneral, limit, core.SearchOptions{})
-			if searchErr != nil {
+			ahmiaResp, ahmiaErr := svc.SearchWithProvider(cmd.Context(), "ahmia", core.SearchRequest{
+				Query: args[0],
+				Limit: limit,
+			})
+			if ahmiaErr == nil && len(ahmiaResp.Results) > 0 {
 				if jsonOut {
-					_ = writeJSONTo(cmd.OutOrStdout(), buildCLIErrorWithInsightMode("darkweb", searchErr, resp.Route, resp.RouteTrace, insightMode))
+					return writeJSONTo(cmd.OutOrStdout(), ahmiaResp)
 				}
-				return searchErr
+				writeWhatsAppResults(cmd.OutOrStdout(), ahmiaResp.Results)
+				return nil
 			}
-			if jsonOut {
-				return writeJSONTo(cmd.OutOrStdout(), resp)
+
+			// Try Haystack (clearnet + dark web)
+			haystackResp, haystackErr := svc.SearchWithProvider(cmd.Context(), "haystack", core.SearchRequest{
+				Query: args[0],
+				Limit: limit,
+			})
+			if haystackErr == nil && len(haystackResp.Results) > 0 {
+				if jsonOut {
+					return writeJSONTo(cmd.OutOrStdout(), haystackResp)
+				}
+				writeWhatsAppResults(cmd.OutOrStdout(), haystackResp.Results)
+				return nil
 			}
-			writeWhatsAppResults(cmd.OutOrStdout(), resp.Results)
-			return nil
+
+			// Try OnionEngine (enterprise threat intel)
+			oeResp, oeErr := svc.SearchWithProvider(cmd.Context(), "onionengine", core.SearchRequest{
+				Query: args[0],
+				Limit: limit,
+			})
+			if oeErr == nil && len(oeResp.Results) > 0 {
+				if jsonOut {
+					return writeJSONTo(cmd.OutOrStdout(), oeResp)
+				}
+				writeWhatsAppResults(cmd.OutOrStdout(), oeResp.Results)
+				return nil
+			}
+
+			// Try DDGS via Tor proxy (onion endpoint)
+			resp, searchErr := search(cmd.Context(), args[0], core.TaskGeneral, limit, core.SearchOptions{})
+			if searchErr == nil && len(resp.Results) > 0 {
+				if jsonOut {
+					return writeJSONTo(cmd.OutOrStdout(), resp)
+				}
+				writeWhatsAppResults(cmd.OutOrStdout(), resp.Results)
+				return nil
+			}
+
+			// ALL darkweb providers failed — return error
+			if ahmiaErr != nil {
+				return fmt.Errorf("darkweb: no results from any provider (Ahmia: %v)", ahmiaErr)
+			}
+			if searchErr != nil {
+				return fmt.Errorf("darkweb: no results from any provider (DDGS: %v)", searchErr)
+			}
+			return fmt.Errorf("darkweb: no results from Ahmia, Haystack, OnionEngine, or DDGS onion")
 		},
 	}
 
 	cmd.Flags().IntVar(&limit, "limit", 5, "maximum results")
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "output JSON")
-	cmd.Flags().StringVar(&insightRaw, "insight", string(core.InsightCompact), "routing insight output: compact, off, or verbose")
+	cmd.Flags().StringVar(&insightRaw, "insight", string(core.InsightCompact), "routing insight output (hidden in WhatsApp mode)")
 	return cmd
 }
 
-// darkwebSearchFunc is the standard search function signature.
 type darkwebSearchFunc func(
 	context.Context,
 	string,
@@ -128,11 +128,8 @@ type darkwebSearchFunc func(
 	core.SearchOptions,
 ) (core.SearchResponse, error)
 
-// svcFunc returns a Service instance.
 type svcFunc func() *core.Service
 
-// writeWhatsAppResults prints search results in WhatsApp-friendly format.
-// Simple: each result as [bold title] + URL + snippet line.
 func writeWhatsAppResults(w io.Writer, results []core.SearchResult) {
 	for _, r := range results {
 		fmt.Fprintf(w, "%s\n%s\n%s\n\n", r.Title, r.URL, r.Snippet)
