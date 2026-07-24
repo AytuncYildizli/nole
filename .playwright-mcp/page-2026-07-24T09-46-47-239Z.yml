@@ -1,0 +1,53 @@
+- generic [active] [ref=e1]:
+  - generic:
+    - generic:
+      - navigation [ref=e4]:
+        - list [ref=e5]:
+          - listitem [ref=e6]:
+            - link "About Ahmia" [ref=e7] [cursor=pointer]:
+              - /url: /about/
+          - listitem [ref=e8]:
+            - link "Add Service" [ref=e9] [cursor=pointer]:
+              - /url: /add/
+        - list [ref=e10]:
+          - listitem [ref=e11]:
+            - link "Privacy Policy" [ref=e12] [cursor=pointer]:
+              - /url: /privacy/
+          - listitem [ref=e13]:
+            - link "Terms of Service" [ref=e14] [cursor=pointer]:
+              - /url: /terms/
+          - listitem [ref=e15]:
+            - link "Blacklist" [ref=e16] [cursor=pointer]:
+              - /url: /blacklist/
+          - listitem [ref=e17]:
+            - link "Contact" [ref=e18] [cursor=pointer]:
+              - /url: /legal/
+      - generic [ref=e19]:
+        - generic [ref=e20]:
+          - img "Ahmia" [ref=e21]
+          - heading "Ahmia" [level=1] [ref=e22]
+          - generic [ref=e23]:
+            - searchbox "q" [ref=e24]
+            - button "Search" [ref=e25] [cursor=pointer]
+        - generic [ref=e26]:
+          - paragraph [ref=e27]:
+            - text: Ahmia searches hidden services on the Tor network. To access these hidden services, you need the
+            - link "Tor browser bundle" [ref=e28] [cursor=pointer]:
+              - /url: https://www.torproject.org/projects/torbrowser.html
+            - text: . Abuse material is not allowed on Ahmia. See our
+            - link "service blacklist" [ref=e29] [cursor=pointer]:
+              - /url: "\n             /blacklist/"
+            - text: and report abuse material if you find it in the index. It will be removed as soon as possible.
+          - paragraph [ref=e30]:
+            - text: For more about Ahmia, see
+            - link "documentation information" [ref=e31] [cursor=pointer]:
+              - /url: "/about/\n             "
+            - text: ","
+            - link "contribute to the source code" [ref=e32] [cursor=pointer]:
+              - /url: https://github.com/ahmia/ahmia-site
+            - text: .
+            - link "The Tor Project" [ref=e33] [cursor=pointer]:
+              - /url: https://www.torproject.org/
+            - text: "Onion service:"
+            - link "juhanurmihxlp77nkq76byazcldy2hlmovfu2epvl5ankdibsot4csyd.onion" [ref=e34] [cursor=pointer]:
+              - /url: http://juhanurmihxlp77nkq76byazcldy2hlmovfu2epvl5ankdibsot4csyd.onion/

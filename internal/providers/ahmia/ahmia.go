@@ -4,8 +4,12 @@
 // actually crawls Tor hidden services and indexes .onion content directly.
 //
 // Ahmia's .onion search page requires JavaScript rendering. This provider
-// uses a Scrapling Python helper script for JS render + DOM extraction,
-// communicating via a JSON stdin/stdout contract.
+// uses a Playwright Firefox Python helper script for JS render + DOM
+// extraction, communicating via a JSON stdin/stdout contract.
+//
+// Firefox (not Chromium) is required: Chromium's --proxy-server gives
+// ERR_NO_SUPPORTED_PROXIES for .onion addresses. Firefox with SOCKS5
+// user_prefs handles .onion DNS natively through Tor.
 //
 // Proxy: requires NOLE_PROXY_URL (SOCKS5 through Tor).
 // Clearnet fallback: disabled by design (Tor required).
@@ -33,7 +37,7 @@ const DefaultTorPort = 9050
 const nonJSBanner = "non-JavaScript"
 const helperTimeout = 90 * time.Second
 
-// Provider uses Scrapling Python helper for Ahmia search.
+// Provider uses Playwright Firefox Python helper for Ahmia search via Tor.
 type Provider struct {
 	helperPath string
 }
